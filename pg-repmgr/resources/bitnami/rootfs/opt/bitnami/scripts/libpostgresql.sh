@@ -510,6 +510,47 @@ postgresql_create_admin_user() {
 }
 
 ########################
+# Create a function in POSTGRESQL_DATABASE which does the following operation
+#   - if DB server executing function is slave, then function checks if repmgr recorded a promotion event 
+#     in recent past [interval defined by PROMOTION_EVENT_MONITORING_INTERVAL]
+#   - Raises a custom exception if there is Promotion event , which allows the client-application to act upon it
+# Arguments:
+#   None
+# Returns:
+#   None
+#########################
+
+postgresql_create_function_notify_on_primary_promotion() {
+   info "Creating function raise_exception_on_primary_promotion in ${POSTGRESQL_DATABASE} database"
+   echo "CREATE OR REPLACE FUNCTION raise_exception_on_primary_promotion() RETURNS VOID AS \$\$ BEGIN IF pg_is_in_recovery() THEN IF EXISTS ( SELECT 1 FROM repmgr_events WHERE event_timestamp >= now() - interval '${PROMOTION_EVENT_MONITORING_INTERVAL:-10} second' AND details LIKE '%was successfully promoted%') THEN RAISE EXCEPTION 'A promotion event was detected.'; END IF; ELSE PERFORM 0; END IF;END; \$\$ LANGUAGE plpgsql;" | postgresql_execute "$POSTGRESQL_DATABASE" "${POSTGRESQL_USERNAME}" "$POSTGRESQL_PASSWORD"
+}
+
+########################
+# Create a dblink to access repmgr.events table from configured application database
+# Globals:
+#   POSTGRESQL_*
+# Arguments:
+#   None
+# Returns:
+#   None
+#########################
+
+postgresql_setup_cross_reference_of_repmgr_events() {
+    info "Creating cross-reference access of repmgr events table to ${POSTGRESQL_DATABASE} database"
+    info "Creating extension postgres_fdw in ${POSTGRESQL_DATABASE} database"
+    echo "CREATE EXTENSION IF NOT EXISTS postgres_fdw;" | postgresql_execute "$POSTGRESQL_DATABASE" "postgres"  ""
+    info "Creating repmgr_foreign_server in ${POSTGRESQL_DATABASE} database"
+    echo "CREATE SERVER repmgr_foreign_server FOREIGN DATA WRAPPER postgres_fdw OPTIONS (dbname '${REPMGR_DATABASE:-repmgr}', host 'localhost', port '${POSTGRESQL_PORT_NUMBER:-5432}');" | postgresql_execute "$POSTGRESQL_DATABASE"  "postgres" ""
+    info "Creating user mapping for ${POSTGRESQL_USERNAME} user in ${POSTGRESQL_DATABASE} database"
+    echo "CREATE USER MAPPING FOR \"${POSTGRESQL_USERNAME}\" SERVER repmgr_foreign_server OPTIONS (user '${REPMGR_USERNAME:-repmgr}', password '${REPMGR_PASSWORD:-}');" | postgresql_execute "$POSTGRESQL_DATABASE"  "postgres" ""
+    info "Creating foriegn table in ${POSTGRESQL_DATABASE} database referencing repmgr events table"
+    echo "CREATE FOREIGN TABLE repmgr_events (node_id INTEGER, event TEXT, successful BOOLEAN, event_timestamp TIMESTAMPTZ, details TEXT) SERVER repmgr_foreign_server OPTIONS (schema_name 'repmgr', table_name 'events');" | postgresql_execute "$POSTGRESQL_DATABASE"  "postgres" ""
+    info "Allow ${POSTGRESQL_USERNAME} user to execute SELECT permission on repmgr_events"
+    echo "GRANT SELECT ON TABLE repmgr_events TO \"${POSTGRESQL_USERNAME}\";" | postgresql_execute "$POSTGRESQL_DATABASE"  "postgres" ""
+}
+
+
+########################
 # Create a database with name $POSTGRESQL_DATABASE
 # Globals:
 #   POSTGRESQL_*
@@ -640,11 +681,19 @@ postgresql_initialize() {
             [[ -n "${POSTGRESQL_DATABASE}" ]] && [[ "$POSTGRESQL_DATABASE" != "postgres" ]] && postgresql_create_custom_database
             if [[ "$POSTGRESQL_USERNAME" = "postgres" ]]; then
                 postgresql_alter_postgres_user "$POSTGRESQL_PASSWORD"
+                 if [[ "$POSTGRESQL_DATABASE" = "keycloak" ]]; then
+                    postgresql_create_function_notify_on_primary_promotion
+                    postgresql_setup_cross_reference_of_repmgr_events
+                fi
             else
                 if [[ -n "$POSTGRESQL_POSTGRES_PASSWORD" ]]; then
                     postgresql_alter_postgres_user "$POSTGRESQL_POSTGRES_PASSWORD"
                 fi
                 postgresql_create_admin_user
+                if [[ "$POSTGRESQL_DATABASE" = "keycloak" ]]; then
+                    postgresql_create_function_notify_on_primary_promotion
+                    postgresql_setup_cross_reference_of_repmgr_events
+                fi
             fi
             is_boolean_yes "$create_pghba_file" && postgresql_restrict_pghba
             [[ -n "$POSTGRESQL_REPLICATION_USER" ]] && postgresql_create_replication_user
