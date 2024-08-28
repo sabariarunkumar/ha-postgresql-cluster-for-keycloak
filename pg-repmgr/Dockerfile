@@ -1,12 +1,28 @@
-FROM debian:bullseye as bitname_base
+# Copyright VMware, Inc.
+# SPDX-License-Identifier: APACHE-2.0
+
+FROM debian:bullseye
+
 ARG TARGETARCH
+
+# LABEL com.vmware.cp.artifact.flavor="sha256:1e1b4657a77f0d47e9220f0c37b9bf7802581b93214fff7d1bd2364c8bf22e8e" \
+#      org.opencontainers.image.base.name="docker.io/bitnami/minideb:bullseye" \
+#       org.opencontainers.image.created="2023-11-06T16:31:36Z" \
+#       org.opencontainers.image.description="Application packaged by VMware, Inc" \
+#       org.opencontainers.image.licenses="Apache-2.0" \
+#       org.opencontainers.image.ref.name="16.0.0-debian-11-r14" \
+#       org.opencontainers.image.title="postgresql-repmgr" \
+#       org.opencontainers.image.vendor="VMware, Inc." \
+#       org.opencontainers.image.version="16.0.0"
+
 ENV HOME="/" \
     OS_ARCH="${TARGETARCH:-amd64}" \
     OS_FLAVOUR="debian-11" \
     OS_NAME="linux"
 
-COPY resources/bitnami/prebuildfs /
+COPY prebuildfs /
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+# Install required system packages and dependencies
 RUN install_packages ca-certificates curl libbsd0 libedit2 libffi7 libgcc-s1 libgmp10 libgnutls30 libhogweed6 libicu67 libidn2-0 libldap-2.4-2 liblz4-1 liblzma5 libmd0 libnettle8 libp11-kit0 libpcre3 libreadline8 libsasl2-2 libsqlite3-0 libssl1.1 libstdc++6 libtasn1-6 libtinfo6 libunistring2 libuuid1 libxml2 libxslt1.1 locales procps zlib1g
 RUN mkdir -p /tmp/bitnami/pkg/cache/ && cd /tmp/bitnami/pkg/cache/ && \
     COMPONENTS=( \
@@ -31,7 +47,7 @@ RUN update-locale LANG=C.UTF-8 LC_MESSAGES=POSIX && \
 RUN echo 'en_GB.UTF-8 UTF-8' >> /etc/locale.gen && locale-gen
 RUN echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen && locale-gen
 
-COPY resources/bitnami/rootfs /
+COPY rootfs /
 RUN /opt/bitnami/scripts/postgresql-repmgr/postunpack.sh
 RUN /opt/bitnami/scripts/locales/add-extra-locales.sh
 ENV APP_VERSION="16.0.0" \
@@ -41,10 +57,8 @@ ENV APP_VERSION="16.0.0" \
     NSS_WRAPPER_LIB="/opt/bitnami/common/lib/libnss_wrapper.so" \
     PATH="/opt/bitnami/postgresql/bin:/opt/bitnami/repmgr/bin:$PATH"
 
-
-FROM bitname_base as build
-
-COPY ./entrypoint.sh /
 EXPOSE 5432
-USER 301
-ENTRYPOINT ["/entrypoint.sh"]
+
+USER 1001
+ENTRYPOINT [ "/opt/bitnami/scripts/postgresql-repmgr/entrypoint.sh" ]
+CMD [ "/opt/bitnami/scripts/postgresql-repmgr/run.sh" ]
